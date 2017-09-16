@@ -1,0 +1,6 @@
+*.pyc
+__pycache__/
+/env/
+/node_modules/
+!/src/client/web/build/.gitkeep
+/src/client/web/build/*.*
