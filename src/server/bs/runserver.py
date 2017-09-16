@@ -4,23 +4,31 @@
 BattleShip Web Service
 """
 
+import os
 import sys
 import json
 import uuid
+from pprint import pprint
 
 import numpy as np
-import tornado.ioloop
-import tornado.web
+from tornado import (
+    ioloop as torn_ioloop,
+    web as torn_web,
+    websocket as torn_ws
+)
 
+SRC_ROOT = os.path.realpath(os.path.join(os.path.dirname(__file__), "../../"))
+STATIC_ROOT = os.path.realpath(os.path.join(SRC_ROOT, "client/web/"))
 
 GAMES = {}
+SESSIONS = {}
 SESSION_KEY = "X-Bs-Session-Id"
 GRID_SIZE = 10
 SHIPS = {
     "carrier": {
         "intcode": 1,
         "length": 5
-    }
+    },
     "battleship": {
         "intcode": 2,
         "length": 4
@@ -38,9 +46,78 @@ SHIPS = {
         "length": 2
     }
 }
-SHIPS_INTCODES = dict(lambda s: (s[1]["intcode"], s[0]), SHIPS.items())
+SHIPS_INTCODES = dict(map(lambda s: (s[1]["intcode"], s[0]), SHIPS.items()))
 MOVE_HIT = 1
 MOVE_MISS = 2
+
+
+class SessionModel(object):
+
+    id = None
+    websocket = None
+    in_game = None
+
+    def __init__(self):
+        self.id = str(uuid.uuid4())
+        self.websocket = None
+        self.in_game = False
+        return None
+
+    def set_websocket(self, conn):
+        self.websocket = conn
+        return True
+
+    def remove_websocket(self):
+        self.websocket = None
+        return True
+
+    def enable_in_game(self):
+        self.in_game = True
+        return True
+
+    def send_data(self, data):
+        if self.websocket is None:
+            return False
+        self.websocket.send_data(data)
+        return True
+
+    @classmethod
+    def destroy(cls, session):
+        session.websocket = None
+        session.in_game = None
+        if session.id in SESSIONS:
+            del SESSIONS[session.id]
+        return True
+
+    @classmethod
+    def get_sessions_not_in_games(cls):
+        return list(
+            filter(
+                lambda s: not s.in_game and s.websocket is not None,
+                SESSIONS.values()
+            )
+        )
+
+    @classmethod
+    def make_session(cls):
+        session = SessionModel()
+        SESSIONS[session.id] = session
+        return session
+
+    @classmethod
+    def find_session(cls, session_id):
+        if not session_id in SESSIONS:
+            return None
+        return SESSIONS[session_id]
+
+    @classmethod
+    def notify_sessions_refresh_list(cls):
+        sessions = SessionModel.get_sessions_not_in_games()
+        for session in sessions:
+            session.send_data({
+                "action": "refresh_games"
+            })
+        return True
 
 
 class ShipModel(object):
@@ -87,7 +164,7 @@ class ShipModel(object):
 class PlayerModel(object):
 
     id = None
-    session_id = None
+    session = None
     moves_map = None
     moves_index = None
     ships = None
@@ -95,9 +172,9 @@ class PlayerModel(object):
     grid_attempts = None
     sunk_all = None
 
-    def __init__(self):
+    def __init__(self, session):
         self.id = str(uuid.uuid4())
-        self.session_id = str(uuid.uuid4())
+        self.session = session
         self.moves_index = []
         self.moves_map = {}
         self.ships = {}
@@ -124,8 +201,8 @@ class PlayerModel(object):
     def get_moves(self):
         return self.moves_index
 
-    def check_session(self, session_id):
-        return session_id is not None and session_id == self.session_id
+    def check_session(self, session):
+        return session is not None and session.id == self.session_id
 
     def has_ship(self, ship_id):
         return (ship_id in self.ships)
@@ -250,29 +327,47 @@ class GameModel(object):
     def __init__(self):
         self.id = str(uuid.uuid4())
         self.players = {}
-        game_status = True
+        game_status = None
         win_player = None
         return None
 
-    def add_player(self):
+    def add_player(self, session):
         if len(self.players) >= 2:
             return None
-        player = PlayerModel()
+        player = PlayerModel(session)
         self.players[player.id] = player
+        self.game_status = True
+        session.enable_in_game()
+        SessionModel.notify_sessions_refresh_list()
+        self.notify_players_refresh_game()
         return player
 
+    def notify_players_refresh_game(self):
+        for player in self.players.values():
+            player.session.send_data({
+                "action": "refresh_game"
+            })
+        return True
+
     def export(self, this_player_id=None):
+        opposing_player = self.get_opposing_player(this_player_id)
         return {
             "id": self.id,
             "game_status": self.game_status,
             "win_player": self.win_player,
             "players": (
-                list(
+                dict(
                     map(
-                        lambda p: p.export(this_player_id),
+                        lambda p: (p.id, p.export(this_player_id)),
                         self.players.values()
                     )
                 )
+            ),
+            "player_id_you": this_player_id,
+            "player_id_opponent": (
+                None
+                if opposing_player is None
+                else opposing_player.id
             )
         }
 
@@ -280,7 +375,10 @@ class GameModel(object):
         players = (
             list(
                 filter(
-                    lambda p: p.session_id == session_id,
+                    lambda p: (
+                        p.session is not None and
+                        p.session.id == session_id
+                    ),
                     self.players.values()
                 )
             )
@@ -295,21 +393,22 @@ class GameModel(object):
     def get_player(self, player_id):
         return (self.players[player_id])
 
-    def get_opposing_player(self, this_player):
-        other_players (
+    def get_opposing_player(self, this_player_id):
+        other_players = (
             list(
                 filter(
-                    lambda p: p[0] != this_player.id,
+                    lambda p: p[0] != this_player_id,
                     self.players.items()
                 )
             )
         )
+        #pprint(other_players)
         if len(other_players) == 0:
             return None
-        return other_players[0][0]
+        return other_players[0][1]
 
     def make_move(self, this_player, coords):
-        oppose_player = self.get_opposing_player(this_player)
+        oppose_player = self.get_opposing_player(this_player.id)
         if oppose_player is None:
             return (False, None, "no_opposing_player")
         hit_status, hit_data, hit_msg = oppose_player.register_hit(coords)
@@ -335,18 +434,36 @@ class GameModel(object):
         return GAMES[game_id]
 
     @classmethod
-    def create_game_from_id(cls, game_id):
+    def create_game_from_id(cls):
         game = GameModel()
         GAMES[game.id] = game
         return game
 
+    @classmethod
+    def get_joinable_games(cls):
+        return (
+            list(
+                filter(
+                    lambda g: (
+                        (len(g.players) < 2) and
+                        (g.game_status is not False)
+                    ),
+                    GAMES.values()
+                )
+            )
+        );
 
-class BaseHandler(tornado.web.RequestHandler):
 
-    def get_session_id(self):
+class BaseWebHandler(torn_web.RequestHandler):
+
+    def get_session(self):
         if SESSION_KEY not in self.request.headers:
             return None
-        return self.request.headers[SESSION_KEY]
+        sess_id_header = self.request.headers[SESSION_KEY]
+        session = SessionModel.find_session(sess_id_header)
+        if session is None:
+            return None
+        return session
 
     def response(self, body_obj=None, status=200, code="ok", headers=None):
         self.set_status(status)
@@ -361,37 +478,54 @@ class BaseHandler(tornado.web.RequestHandler):
         return None
 
 
-class GamesHandler(BaseHandler):
+class SessionsHandler(BaseWebHandler):
 
     def post(self):
+        session = SessionModel.make_session()
+        return self.response(
+            None,
+            headers=[(SESSION_KEY, session.id)]
+        )
+
+
+class GamesHandler(BaseWebHandler):
+
+    def post(self):
+        session = self.get_session()
+        if session is None:
+            return self.response(None, 401, "no_session_id")
         game = GameModel.create_game_from_id()
-        player = game.add_player()
+        player = game.add_player(session)
         exported = game.export(player.id)
-        return self.response(exported)
+        return self.response(
+            exported,
+            headers=[(SESSION_KEY, player.session.id)]
+        )
 
     def get(self):
-        game_ids = list(GAMES.keys())
-        return self.response(game_ids)
+        games = GameModel.get_joinable_games()
+        out = list(map(lambda g: g.export(), games))
+        return self.response(out)
 
 
-class GameHandler(BaseHandler):
+class GameHandler(BaseWebHandler):
 
     def get(self, game_id):
         """
         Gets status for current game
         """
-        session_id = self.get_session_id()
-        if session_id is None:
-            return self.response(None, 401, "no_session_id")
-        player = GameModel.get_player_by_session_id(session_id)
-        if not GameModel.game_exists(game_id):
+        game = GameModel.get_game_by_id(game_id)
+        if game is None:
             return self.response(None, 404, "game_not_found")
-        game = GameModel.get_game_by_id(game)
+        session = self.get_session()
+        if session is None:
+            return self.response(None, 401, "no_session_id")
+        player = game.get_player_by_session_id(session.id)
         exported = game.export(player.id)
         return self.response(exported)
 
 
-class PlayersHandler(BaseHandler):
+class PlayersHandler(BaseWebHandler):
 
     def post(self, game_id):
         """
@@ -400,19 +534,17 @@ class PlayersHandler(BaseHandler):
         if not GameModel.game_exists(game_id):
             return self.response(None, 404, "game_not_found")
         game = GameModel.get_game_by_id(game_id)
-        player = game.add_player()
+        session = self.get_session()
+        if session is None:
+            return self.response(None, 401, "no_session_id")
+        player = game.add_player(session)
         if player is None:
             return self.response(None, 401, "max_players_already_joined")
-        return self.response(
-            {
-                "game_id": game.id,
-                "player_id": player.id
-            },
-            headers=[(SESSION_KEY, player.session_id)]
-        )
+        exported = game.export(player.id)
+        return self.response(exported)
 
 
-class MovesHandler(BaseHandler):
+class MovesHandler(BaseWebHandler):
 
     def put(self, game_id, player_id, move_code):
         game = GameModel.get_game_by_id(game)
@@ -421,7 +553,10 @@ class MovesHandler(BaseHandler):
         player = game.get_player(player_id)
         if player is None:
             return self.response(None, 403, "player_id_not_specified")
-        if not player.check_session(self.get_session_id()):
+        session = self.get_session()
+        if session is None:
+            return self.response(None, 403, "no_session")
+        if not player.check_session(session.id):
             return self.response(None, 403, "player_session_not_authorized")
         coords = player.parse_move(move_code)
         if coords is None:
@@ -432,7 +567,7 @@ class MovesHandler(BaseHandler):
         return self.response(move_data)
 
 
-class ShipsHandler(BaseHandler):
+class ShipsHandler(BaseWebHandler):
 
     def put(self, game_id, player_id, ship_id, coords_code):
         game = GameModel.get_game_by_id(game)
@@ -441,7 +576,10 @@ class ShipsHandler(BaseHandler):
         player = game.get_player(player_id)
         if player is None:
             return self.response(None, 403, "player_id_not_specified")
-        if not player.check_session(self.get_session_id()):
+        session = self.get_session()
+        if session is None:
+            return self.response(None, 403, "no_session")
+        if not player.check_session(session.id):
             return self.response(None, 403, "player_session_not_authorized")
         coords, orientation = player.parse_ship_coords(coords_code)
         if not coords:
@@ -452,34 +590,89 @@ class ShipsHandler(BaseHandler):
         return self.response()
 
 
+class BaseWsHandler(torn_ws.WebSocketHandler):
+
+    session = None
+
+    def check_origin(self, origin):
+        return True
+
+    def open(self, session_id):
+        print("HEY: %s" % session_id)
+        session = SessionModel.find_session(session_id)
+        if session is None:
+            self.close()
+            return None
+        self.session = session
+        self.session.set_websocket(self)
+        return None
+
+    def send_data(self, data):
+        self.write_message(json.dumps(data))
+        return True
+
+    def on_message(self, message):
+        self.write_message("MESSAGE: %s" % message)
+        return None
+
+    def on_close(self):
+        SessionModel.destroy(self.session)
+        return None
+
+
 def make_app():
     return (
-        tornado.web.Application([
+        torn_web.Application([
+            ##
+            ## This is the Websocket route
+            ##
             (
-                r"/games",
+                r"/ws/([A-Za-z0-9-]{36})",
+                BaseWsHandler,
+            ),
+            ##
+            ## These are all API routes
+            ##
+            (
+                r"/api/sessions",
+                SessionsHandler
+            ),
+            (
+                r"/api/games",
                 GamesHandler
             ),
             (
-                r"/games/([A-Za-z0-9-]{36})",
+                r"/api/games/([A-Za-z0-9-]{36})",
                 GameHandler
             ),
             (
-                r"/games/([A-Za-z0-9-]{36})/players",
+                r"/api/games/([A-Za-z0-9-]{36})/players",
                 PlayersHandler
             ),
             (
-                r"/games/([A-Za-z0-9-]{36})"
+                r"/api/games/([A-Za-z0-9-]{36})"
                 r"/players/([A-Za-z0-9-]{32})/ships/%(SHIPS)s"
                 r"/([0-9]{1,2}-[0-9]{1,2}-[xy])" %
-                (
-                    r"|".join(SHIPS.keys())
-                ),
+                {
+                    "SHIPS": r"|".join(SHIPS.keys())
+                },
                 ShipsHandler
             ),
             (
-                r"/games/([A-Za-z0-9-]{36})"
+                r"/api/games/([A-Za-z0-9-]{36})"
                 r"/players/([A-Za-z0-9-]{32})/moves/([0-9]{1,2}-[0-9]{1,2})",
                 MovesHandler
+            ),
+            ##
+            ## These are static file routes
+            ##
+            (
+                r"/(.*)",
+                torn_web.StaticFileHandler,
+                {
+                    "default_filename": "index.html",
+                    "path": STATIC_ROOT
+                }
             )
         ])
     )
@@ -488,7 +681,7 @@ def make_app():
 def main():
     app = make_app()
     app.listen(8888)
-    tornado.ioloop.IOLoop.current().start()
+    torn_ioloop.IOLoop.current().start()
     return True
 
 
