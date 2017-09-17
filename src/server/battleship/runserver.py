@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
 """
-BattleShip Web Service
+BattleShip Tornado Web Service
+
+Copyright 2017 Brendon Crawford <brendon@aphex.io>
+
 """
 
 import os
@@ -685,7 +688,7 @@ class BaseWsHandler(torn_ws.WebSocketHandler):
         return True
 
     def open(self, session_id):
-        print("HEY: %s" % session_id)
+        print("WEBSOCKET_SESSION: %s" % session_id)
         session = SessionModel.find_session(session_id)
         if session is None:
             self.close()
@@ -773,6 +776,7 @@ def make_app():
 def main():
     app = make_app()
     app.listen(8888)
+    print("STARTING_APP")
     torn_ioloop.IOLoop.current().start()
     return True
 

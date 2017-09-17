@@ -1,4 +1,11 @@
 
+/**
+ * BattleShip ReactJS Application
+ *
+ * Copyright 2017 Brendon Crawford <brendon@aphex.io>
+ *
+ */
+
 "use strict";
 
 import $ from "jquery";
@@ -83,23 +90,33 @@ class Battleship extends React.Component {
 
   renderGameResults () {
     const youPlayer = this.getYouPlayer();
-    if (this.state.game.game_status === true) {
-      const turnMsg = (
-        youPlayer.is_turn ?
-          "IT IS YOUR TURN" :
-          "IT IS YOUR OPPONENT'S TURN"
-      );
-      return (
-        <div>
-          <h2>{turnMsg}</h2>
-        </div>
-      );
-    }
+    const oppPlayer = this.getOpponentPlayer();
     const winPlayerId = this.state.game.player_id_winner;
-    const msg = (winPlayerId === youPlayer.id ? "YOU WON!" : "YOU LOST!");
+    const isYouWinner = (winPlayerId === youPlayer.id);
+    const msg = (() => {
+      if (this.state.game.game_status === false) {
+        if (winPlayerId !== null) {
+          if (isYouWinner) {
+            return "YOU WON! GAME OVER!";
+          }
+          return "YOU LOST! GAME OVER!";
+        }
+        return "ERROR";
+      }
+      if (!youPlayer.all_ships_added) {
+        return "YOU MUST ADD YOUR SHIPS";
+      }
+      if (!oppPlayer.all_ships_added) {
+        return "WAITING FOR OPPONENT TO ADD ALL SHIPS";
+      }
+      if (!youPlayer.is_turn) {
+        return "IT IS YOUR OPPONENT'S TURN";
+      }
+      return "IT IS YOUR TURN";
+    })();
     return (
       <div>
-        <h2>{msg} GAME OVER!</h2>
+        <h2>{msg}</h2>
       </div>
     );
   }
@@ -168,6 +185,11 @@ class Battleship extends React.Component {
 
   handleClickYourGridCell (coords, evt) {
     const youPlayer = this.getYouPlayer();
+    if (!youPlayer.all_ships_added && this.state.placeShip === null) {
+      window.alert("You must first select a ship to add.");
+      evt.preventDefault();
+      return false;
+    }
     $.ajax({
       type: "PUT",
       url: this.buildUrl([
@@ -270,9 +292,7 @@ class Battleship extends React.Component {
       }
       return "";
     })();
-    if (this.state.placeShip !== null) {
-      extras.onClick = this.handleClickYourGridCell.bind(this, coords);
-    }
+    extras.onClick = this.handleClickYourGridCell.bind(this, coords);
     return (
       <td key={x} className={className} {...extras}>
         {val}
@@ -468,7 +488,8 @@ class Battleship extends React.Component {
         <h3>Opponent Ships</h3>
         <ol>
           <li>
-            To attack your opponent, click a cell on the Opponent Zone grid.
+            To attack your opponent, click a cell
+            on the Opponent Zone grid to the left.
           </li>
         </ol>
         <table className="ships">
@@ -492,8 +513,11 @@ class Battleship extends React.Component {
       <div className="yourShips">
         <h3>Your Ships</h3>
         <ol>
-          <li>Select a ship and ship orientation</li>
-          <li>Click the cell on the grid where you want to place the ship</li>
+          <li>In the table below, select a ship with ship orientation.</li>
+          <li>
+            In the grid on to the left, click the cell
+            where you want to place the ship.
+          </li>
         </ol>
         <table className="ships">
           <thead>
@@ -527,13 +551,11 @@ class Battleship extends React.Component {
     }
     if (!oppPlayer.all_ships_added) {
       return (
-        <div>
-          <em>
-            Opponent is still adding ships.
-            When opponent has added all ships,
-            you will be able to specify attacks on
-            a grid here.  Waiting...
-          </em>
+        <div className="stillAdding">
+          Opponent is still adding ships.
+          When opponent has added all ships,
+          you will be able to specify attacks on
+          a grid here.  Waiting...
         </div>
       );
     }
@@ -574,14 +596,7 @@ class Battleship extends React.Component {
 
   renderListGames () {
     if (this.state.allGames.length === 0) {
-      return (
-          <div>
-            <em>
-              No games are available. Waiting for
-              games to start...
-            </em>
-          </div>
-      );
+      return [];
     }
     //console.log(this.state.allGames);
     return (
