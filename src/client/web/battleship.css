@@ -19,6 +19,11 @@ table.ships tr.shipIsOnBoard {
 
 }
 
+div.stillAdding {
+  color: #FF0000;
+  font-style: italic;
+}
+
 table.ships tr.shipIsSunk {
   background-color: #FF0000;
   text-decoration: line-through;

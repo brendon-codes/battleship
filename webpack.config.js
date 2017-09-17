@@ -24,7 +24,7 @@ const configBase = {
           {
             loader: "babel-loader",
             options: {
-              compact: false
+              compact: true
             }
           },
           {
@@ -54,9 +54,9 @@ const configApp = Extend({
     dash: "./src/client/web/battleship.js"
   },
   output: {
-    filename: "./src/client/web/battleship-build.js"
+    filename: "./src/client/web/build/battleship-build.js"
   },
-  watch: true
+  watch: false
 }, configBase);
 
 
