@@ -1,0 +1,62 @@
+
+table {
+  border-collapse: collapse;
+}
+
+.clear {
+  clear: both;
+}
+
+div.shipsAvail {
+  margin-left: 20px;
+}
+
+table.ships tr.selectedPlacementShip {
+  background-color: #CCFFCC;
+}
+
+table.ships tr.shipIsOnBoard {
+
+}
+
+table.ships tr.shipIsSunk {
+  background-color: #FF0000;
+  text-decoration: line-through;
+}
+
+table.grid td.gridCellHit {
+  background-color: #FF3333;
+}
+
+table.grid td.gridCellMiss {
+  background-color: #CCCCCC;
+}
+
+div.yourGrid,
+div.oppGrid {
+  margin-bottom: 20px;
+  margin-right: 20px;
+}
+
+h2 {
+  color: #FF0000;
+}
+
+div.yourShips,
+div.oppShips,
+div.yourGrid,
+div.oppGrid {
+  float: left;
+}
+
+table.ships td {
+  border: 1px solid #008800;
+}
+
+table.grid td {
+  border: 1px solid #000000;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+}
+
