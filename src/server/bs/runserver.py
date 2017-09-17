@@ -26,22 +26,27 @@ SESSION_KEY = "X-Bs-Session-Id"
 GRID_SIZE = 10
 SHIPS = {
     "carrier": {
+        "id": "carrier",
         "intcode": 1,
         "length": 5
     },
     "battleship": {
+        "id": "battleship",
         "intcode": 2,
         "length": 4
     },
     "cruiser": {
+        "id": "cruiser",
         "intcode": 3,
         "length": 3
     },
     "submarine": {
+        "id": "submarine",
         "intcode": 4,
         "length": 3
     },
     "destroyer": {
+        "id": "destroyer",
         "intcode": 5,
         "length": 2
     }
@@ -145,6 +150,7 @@ class ShipModel(object):
 
     def export(self):
         return {
+            "id": self.id,
             "hits": self.hits,
             "sunk": self.sunk,
             "length": self.length,
@@ -164,6 +170,7 @@ class ShipModel(object):
 class PlayerModel(object):
 
     id = None
+    game = None
     session = None
     moves_map = None
     moves_index = None
@@ -172,8 +179,9 @@ class PlayerModel(object):
     grid_attempts = None
     sunk_all = None
 
-    def __init__(self, session):
+    def __init__(self, session, game):
         self.id = str(uuid.uuid4())
+        self.game = game
         self.session = session
         self.moves_index = []
         self.moves_map = {}
@@ -185,24 +193,32 @@ class PlayerModel(object):
 
     def export(self, this_player_id=None):
         is_this_player = this_player_id == self.id
+        ships_objs = self.ships.values()
+        ships_pre = (
+            filter(lambda s: s.sunk, ships_objs)
+            if not is_this_player
+            else ships_objs
+        )
+        ships_list = list(map(lambda s: s.export(), ships_pre))
         return {
             "id": self.id,
             "moves_index": self.moves_index,
             "sunk_all": self.sunk_all,
-            "grid_attempts": self.grid.tolist(),
+            "grid_attempts": self.grid_attempts.tolist(),
             "grid": self.grid.tolist() if is_this_player else None,
-            "ships": (
-                list(map(lambda s: s.export(), self.ships))
-                if is_this_player
-                else None
+            "all_ships_added": self.check_all_ships_added(),
+            "ships": ships_list,
+            "is_turn": (
+                self.game.player_turn is not None and
+                self.game.player_turn.id == self.id
             )
         }
 
     def get_moves(self):
         return self.moves_index
 
-    def check_session(self, session):
-        return session is not None and session.id == self.session_id
+    def check_session(self, session_id):
+        return session_id is not None and session_id == self.session.id
 
     def has_ship(self, ship_id):
         return (ship_id in self.ships)
@@ -215,30 +231,39 @@ class PlayerModel(object):
             return False
         ship = ShipModel.make_ship_by_id(ship_id)
         ship_arr = self.get_ship_arr(ship.length, coords, orientation)
+        if ship_arr is None:
+            return None
         available = self.is_space_available(ship_arr)
         if not available:
             return False
         self.add_ship_coords_to_grid(ship_arr, ship.intcode)
         self.ships[ship_id] = ship
+        self.game.notify_players_refresh_game()
         return True
 
-    def add_ship_coord_to_grid(self, ship_arr, ship_intit):
-        ship_arr.fill(ship_intit)
+    def add_ship_coords_to_grid(self, ship_arr, ship_intcode):
+        ship_arr.fill(ship_intcode)
         return True
 
     def is_space_available(self, ship_arr):
-        return (len(filter(lambda k: k > 0, ship_arr)) == 0)
+        return (len(list(filter(lambda k: k > 0, ship_arr))) == 0)
 
     def get_ship_arr(self, ship_len, coords, orientation):
         x, y = coords
         if orientation == "x":
-            return self.grid[y][x:(x + ship_len)]
+            end = (x + ship_len)
+            if end >= GRID_SIZE:
+                return None
+            return self.grid[y][x:end]
         if orientation == "y":
-            return self.grid[y:(y + ship_len),x]
+            end = (y + ship_len)
+            if end >= GRID_SIZE:
+                return None
+            return self.grid[y:end,x]
         return None
 
-    def parse_ship_coords(coords_code):
-        parts = move_code.split("-")
+    def parse_ship_coords(self, coords_code):
+        parts = coords_code.split("-")
         if len(parts) != 3:
             return False
         try:
@@ -278,7 +303,9 @@ class PlayerModel(object):
         return True
 
     def is_sunk_all(self):
-        return (len(list(filter(lambda s: not s.sunk, self.ships))) == 0)
+        return (
+            len(list(filter(lambda s: not s.sunk, self.ships.values()))) == 0
+        )
 
     def register_hit(self, coords):
         """
@@ -316,28 +343,41 @@ class PlayerModel(object):
             None
         )
 
+    @classmethod
+    def create_player(cls, session, game):
+        player = PlayerModel(session, game)
+        session.enable_in_game()
+        return player
+
 
 class GameModel(object):
 
     id = None
     players = None
     game_status = None
-    win_player = None
+    player_winner = None
+    player_turn = None
 
     def __init__(self):
         self.id = str(uuid.uuid4())
         self.players = {}
-        game_status = None
-        win_player = None
+        self.game_status = None
+        self.player_winner = None
+        self.player_turn = None
         return None
 
     def add_player(self, session):
-        if len(self.players) >= 2:
-            return None
-        player = PlayerModel(session)
-        self.players[player.id] = player
+        ## Check if already a player
+        player = self.get_player_by_session_id(session.id)
+        ## If doesnt exist, create one
+        if player is None:
+            if len(self.players) >= 2:
+                return None
+            player = PlayerModel.create_player(session, self)
+            self.players[player.id] = player
         self.game_status = True
-        session.enable_in_game()
+        if self.player_turn is None:
+            self.player_turn = player
         SessionModel.notify_sessions_refresh_list()
         self.notify_players_refresh_game()
         return player
@@ -354,7 +394,16 @@ class GameModel(object):
         return {
             "id": self.id,
             "game_status": self.game_status,
-            "win_player": self.win_player,
+            "player_id_turn": (
+                self.player_turn.id
+                if self.player_turn is not None
+                else None
+            ),
+            "player_id_winner": (
+                self.player_winner.id
+                if self.player_winner is not None
+                else None
+            ),
             "players": (
                 dict(
                     map(
@@ -368,7 +417,8 @@ class GameModel(object):
                 None
                 if opposing_player is None
                 else opposing_player.id
-            )
+            ),
+            "all_avail_ships": list(SHIPS.values())
         }
 
     def get_player_by_session_id(self, session_id):
@@ -407,20 +457,34 @@ class GameModel(object):
             return None
         return other_players[0][1]
 
+    def swap_player_turn(self):
+        if self.player_turn is None:
+            return False
+        oppose_player = self.get_opposing_player(self.player_turn.id)
+        if oppose_player is None:
+            return False
+        self.player_turn = oppose_player
+        return True
+
     def make_move(self, this_player, coords):
+        if this_player.id != self.player_turn.id:
+            return (False, None, "not_your_turn")
         oppose_player = self.get_opposing_player(this_player.id)
         if oppose_player is None:
             return (False, None, "no_opposing_player")
         hit_status, hit_data, hit_msg = oppose_player.register_hit(coords)
         if not hit_status:
-            return (False, None, msg)
+            return (False, None, hit_msg)
         if oppose_player.sunk_all:
-            self.register_winner(player)
+            self.register_winner(this_player)
+        else:
+            self.swap_player_turn()
+        self.notify_players_refresh_game()
         return (True, hit_data, None)
 
-    def register_winner(player):
+    def register_winner(self, player):
         self.game_status = False
-        self.win_player = player
+        self.player_winner = player
         return True
 
     @classmethod
@@ -440,14 +504,22 @@ class GameModel(object):
         return game
 
     @classmethod
-    def get_joinable_games(cls):
+    def get_joinable_games(cls, session_id):
+        def func(g):
+            #print("---------")
+            #print(session_id)
+            #print(g.get_player_by_session_id(session_id))
+            return (
+                (
+                    (g.get_player_by_session_id(session_id) is not None) or
+                    (len(g.players) < 2)
+                ) and
+                (g.game_status is not False)
+            )
         return (
             list(
                 filter(
-                    lambda g: (
-                        (len(g.players) < 2) and
-                        (g.game_status is not False)
-                    ),
+                    func,
                     GAMES.values()
                 )
             )
@@ -488,6 +560,18 @@ class SessionsHandler(BaseWebHandler):
         )
 
 
+class SessionHandler(BaseWebHandler):
+
+    def get(self, session_id):
+        session = SessionModel.find_session(session_id)
+        if session is None:
+            session = SessionModel.make_session()
+        return self.response(
+            None,
+            headers=[(SESSION_KEY, session.id)]
+        )
+
+
 class GamesHandler(BaseWebHandler):
 
     def post(self):
@@ -503,7 +587,10 @@ class GamesHandler(BaseWebHandler):
         )
 
     def get(self):
-        games = GameModel.get_joinable_games()
+        session = self.get_session()
+        if session is None:
+            return self.response(None, 401, "no_session_id")
+        games = GameModel.get_joinable_games(session.id)
         out = list(map(lambda g: g.export(), games))
         return self.response(out)
 
@@ -547,7 +634,7 @@ class PlayersHandler(BaseWebHandler):
 class MovesHandler(BaseWebHandler):
 
     def put(self, game_id, player_id, move_code):
-        game = GameModel.get_game_by_id(game)
+        game = GameModel.get_game_by_id(game_id)
         if game is None:
             return self.response(None, 404, "game_not_found")
         player = game.get_player(player_id)
@@ -570,7 +657,7 @@ class MovesHandler(BaseWebHandler):
 class ShipsHandler(BaseWebHandler):
 
     def put(self, game_id, player_id, ship_id, coords_code):
-        game = GameModel.get_game_by_id(game)
+        game = GameModel.get_game_by_id(game_id)
         if game is None:
             return self.response(None, 404, "game_not_found")
         player = game.get_player(player_id)
@@ -616,7 +703,6 @@ class BaseWsHandler(torn_ws.WebSocketHandler):
         return None
 
     def on_close(self):
-        SessionModel.destroy(self.session)
         return None
 
 
@@ -638,6 +724,10 @@ def make_app():
                 SessionsHandler
             ),
             (
+                r"/api/sessions/([A-Za-z0-9-]{36})",
+                SessionHandler
+            ),
+            (
                 r"/api/games",
                 GamesHandler
             ),
@@ -651,7 +741,8 @@ def make_app():
             ),
             (
                 r"/api/games/([A-Za-z0-9-]{36})"
-                r"/players/([A-Za-z0-9-]{32})/ships/%(SHIPS)s"
+                r"/players/([A-Za-z0-9-]{36})"
+                r"/ships/(%(SHIPS)s)"
                 r"/([0-9]{1,2}-[0-9]{1,2}-[xy])" %
                 {
                     "SHIPS": r"|".join(SHIPS.keys())
@@ -660,7 +751,8 @@ def make_app():
             ),
             (
                 r"/api/games/([A-Za-z0-9-]{36})"
-                r"/players/([A-Za-z0-9-]{32})/moves/([0-9]{1,2}-[0-9]{1,2})",
+                r"/players/([A-Za-z0-9-]{36})"
+                r"/moves/([0-9]{1,2}-[0-9]{1,2})",
                 MovesHandler
             ),
             ##
